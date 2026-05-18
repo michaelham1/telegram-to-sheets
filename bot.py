@@ -1,7 +1,8 @@
 import logging
 import os
 import json
-from datetime import datetime import pytz
+from datetime import datetime
+import pytz
 from dotenv import load_dotenv
 import gspread
 from google.oauth2.service_account import Credentials
