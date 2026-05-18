@@ -94,7 +94,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or not msg.text:
         return
     text      = msg.text
-    wib = pytz.timezone("Asia/Jakarta") timestamp = datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S")
+    wib = pytz.timezone("Asia/Jakarta")
+    timestamp = datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S")
+
     if ":" in text:
         data = parse_message(text)
         row = [
