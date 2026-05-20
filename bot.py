@@ -165,11 +165,11 @@ def validasi_jumlah(value):
         return True, ""
     value = value.strip()
     if "." in value:
-        return False, f"❌ Jumlah tidak boleh menggunakan titik!\nKamu memasukan: {value}\nMasukan angka saja tanpa lambang: {value.replace('.', '')}"
+        return False, f"❌ Jumlah tidak boleh menggunakan titik!\nKamu memasukan: {value}\nMasukan angka saja: {value.replace('.', '')}"
     if "," in value:
-        return False, f"❌ Jumlah tidak boleh menggunakan koma!\nKamu memasukan: {value}\nMasukan angka saja tanpa lambang: {value.replace(',', '')}"
+        return False, f"❌ Jumlah tidak boleh menggunakan koma!\nKamu memasukan: {value}\nMasukan angka saja: {value.replace(',', '')}"
     if not value.isdigit():
-        return False, f"❌ Jumlah hanya boleh berisi angka!\nKamu memasukan: {value}\nMasukan angka saja tanpa lambang"
+        return False, f"❌ Jumlah hanya boleh berisi angka!\nKamu memasukan: {value}"
     if len(value) < 3:
         return False, f"❌ Jumlah minimal 3 digit!\nKamu memasukan: {value}\nMinimal: 100"
     return True, ""
@@ -197,39 +197,60 @@ def format_ulang_sheet(sheet):
                 sheet.merge_cells(f"A{idx}:H{idx}")
                 sheet.format(f"A{idx}:H{idx}", {
                     "horizontalAlignment": "CENTER",
-                    "textFormat": {"bold": True},
-                    "backgroundColor": {"red": 0.8, "green": 0.8, "blue": 0.8}
+                    "textFormat"         : {"bold": True},
+                    "backgroundColor"    : {"red": 0.8, "green": 0.8, "blue": 0.8}
                 })
             elif is_total(row):
                 sheet.format(f"A{idx}:H{idx}", {
-                    "textFormat": {"bold": True},
-                    "backgroundColor": {"red": 1.0, "green": 0.95, "blue": 0.4}
+                    "textFormat"      : {"bold": True},
+                    "backgroundColor" : {"red": 1.0, "green": 0.95, "blue": 0.4}
                 })
             elif is_shift(row):
                 sheet.merge_cells(f"A{idx}:H{idx}")
                 sheet.format(f"A{idx}:H{idx}", {
                     "horizontalAlignment": "CENTER",
-                    "textFormat": {"bold": True, "italic": True},
-                    "backgroundColor": {"red": 0.9, "green": 0.95, "blue": 1.0}
+                    "textFormat"         : {"bold": True, "italic": True},
+                    "backgroundColor"    : {"red": 0.9, "green": 0.95, "blue": 1.0}
                 })
     except Exception as e:
         logger.error(f"❌ Gagal format: {e}")
 
-# ── Hitung total HANYA untuk tanggal tertentu
-def hitung_total_hari(all_data, target_date):
+# ── Hitung total HANYA untuk 1 hari tertentu
+def hitung_total_satu_hari(all_data, target_date):
+    """
+    Hitung total nominal dan jumlah
+    HANYA dari baris data yang tanggalnya == target_date
+    Tidak mempedulikan hari lain sama sekali
+    """
     total_nominal = 0
     total_jumlah  = 0.0
+
     for row in all_data[1:]:
+        # Skip baris special
         if is_special(row):
             continue
         try:
             dt_row = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
-            if dt_row.date() == target_date:
-                total_nominal += parse_rupiah(row[4])
-                total_jumlah  += parse_jumlah_dari_sheet(row[5])
+            # Hanya proses baris yang tanggalnya sama dengan target
+            if dt_row.date() != target_date:
+                continue
+            # Kolom E (index 4) = Nominal
+            # Kolom F (index 5) = Jumlah
+            nominal = parse_rupiah(row[4])
+            jumlah  = parse_jumlah_dari_sheet(row[5])
+            total_nominal += nominal
+            total_jumlah  += jumlah
         except:
             continue
+
     return total_nominal, total_jumlah
+
+# ── Format string total jumlah
+def format_total_jumlah(total):
+    if total == int(total):
+        return str(int(total))
+    else:
+        return str(round(total, 10)).replace(".", ",")
 
 # ── Tambah total + pembatas + shift saat hari berganti
 def tambah_total_dan_pembatas(sheet, dt_sekarang):
@@ -259,6 +280,7 @@ def tambah_total_dan_pembatas(sheet, dt_sekarang):
         except:
             return
 
+        # Kalau tanggal sama, tidak perlu tambah total
         if dt_terakhir.date() >= dt_sekarang.date():
             return
 
@@ -266,19 +288,19 @@ def tambah_total_dan_pembatas(sheet, dt_sekarang):
         label_total = format_label_total(dt_terakhir)
         for row in all_data[1:]:
             if is_total(row) and label_total in str(row[0]):
+                logger.info(f"⚠️ Total sudah ada: {label_total}")
                 return
 
-        # Hitung total HANYA untuk hari terakhir saja
-        total_nominal, total_jumlah = hitung_total_hari(
-            all_data, dt_terakhir.date()
+        # Hitung total HANYA untuk hari terakhir
+        total_nominal, total_jumlah = hitung_total_satu_hari(
+            all_data,
+            dt_terakhir.date()  # ← hanya tanggal ini
         )
 
-        if total_jumlah == int(total_jumlah):
-            tj_str = str(int(total_jumlah))
-        else:
-            tj_str = str(round(total_jumlah, 10)).replace(".", ",")
-
         tn_str = format_rupiah(str(total_nominal))
+        tj_str = format_total_jumlah(total_jumlah)
+
+        logger.info(f"📊 Total {label_total}: Nominal={tn_str} Jumlah={tj_str}")
 
         # Tambah baris total
         sheet.append_row([label_total, "", "", "", tn_str, tj_str, "", ""])
@@ -290,7 +312,7 @@ def tambah_total_dan_pembatas(sheet, dt_sekarang):
         sheet.append_row([get_shift(dt_sekarang)] + [""] * 7)
 
         format_ulang_sheet(sheet)
-        logger.info(f"✅ Total + pembatas + shift ditambahkan: {label_total}")
+        logger.info(f"✅ Total + pembatas + shift: {label_total}")
 
     except Exception as e:
         logger.error(f"❌ Gagal tambah total: {e}")
@@ -319,7 +341,7 @@ def cek_tambah_shift(sheet, dt_sekarang):
         if ada_pembatas_hari_ini:
             sheet.append_row([shift_now] + [""] * 7)
             format_ulang_sheet(sheet)
-            logger.info(f"✅ Shift ditambahkan: {shift_now}")
+            logger.info(f"✅ Shift: {shift_now}")
 
     except Exception as e:
         logger.error(f"❌ Gagal cek shift: {e}")
@@ -365,6 +387,7 @@ def rapikan_sheet(sheet):
 
         data_rows.sort(key=get_ts)
 
+        # Kelompokkan per hari
         grouped = {}
         for row in data_rows:
             try:
@@ -384,10 +407,10 @@ def rapikan_sheet(sheet):
             dt_hari       = datetime.combine(d, datetime.min.time())
             current_shift = None
 
-            # Tambah pembatas hari
+            # Pembatas hari
             final_rows.append([format_label_hari(dt_hari)] + [""] * 7)
 
-            # Susun data per shift
+            # Data per shift
             for row in rows_hari:
                 try:
                     dt_row    = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
@@ -401,18 +424,16 @@ def rapikan_sheet(sheet):
 
                 final_rows.append(row)
 
-            # Total hanya untuk hari yang sudah selesai
-            # Hitung HANYA dari data hari itu saja
+            # Total hanya hari yang sudah selesai
+            # Hitung HANYA dari rows_hari (data hari itu saja)
             if d < hari_ini:
-                tj = sum(parse_jumlah_dari_sheet(r[5]) for r in rows_hari)
+                # Hitung langsung dari rows_hari bukan all_data
                 tn = sum(parse_rupiah(r[4]) for r in rows_hari)
-
-                if tj == int(tj):
-                    tj_str = str(int(tj))
-                else:
-                    tj_str = str(round(tj, 10)).replace(".", ",")
+                tj = sum(parse_jumlah_dari_sheet(r[5]) for r in rows_hari)
 
                 tn_str = format_rupiah(str(tn))
+                tj_str = format_total_jumlah(tj)
+
                 final_rows.append([
                     format_label_total(dt_hari),
                     "", "", "", tn_str, tj_str, "", ""
@@ -490,7 +511,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(error_msg)
             return
 
-    # ── Format setelah validasi
+    # ── Format
     if data["nominal"]:
         data["nominal"] = format_rupiah(data["nominal"])
     if data["jumlah"]:
@@ -509,18 +530,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         sheet = get_sheet()
-
-        # Tambah total + pembatas jika hari berganti
         tambah_total_dan_pembatas(sheet, dt_now)
-
-        # Cek dan tambah shift baru jika perlu
         cek_tambah_shift(sheet, dt_now)
-
-        # Simpan data
         sheet.append_row(row)
         logger.info(f"✅ Saved | {data['username']} | WA: {data['wa']}")
-
-        # Rapikan
         rapikan_sheet(sheet)
 
         await msg.reply_text(
