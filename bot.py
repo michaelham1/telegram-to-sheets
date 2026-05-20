@@ -103,10 +103,9 @@ def parse_rupiah(value):
         return 0
 
 def format_jumlah(value):
-    # Bagi 1000, tampilkan desimal dengan koma
     try:
-        angka  = int(str(value).strip())
-        hasil  = angka / 1000
+        angka = int(str(value).strip())
+        hasil = angka / 1000
         if hasil == int(hasil):
             return str(int(hasil))
         else:
@@ -115,7 +114,6 @@ def format_jumlah(value):
         return str(value)
 
 def parse_jumlah_dari_sheet(value):
-    # Parse jumlah yang sudah dibagi 1000
     try:
         return float(str(value).replace(",", ".").strip())
     except:
@@ -124,7 +122,7 @@ def parse_jumlah_dari_sheet(value):
 # ── Validasi
 def validasi_wa(value):
     if not value.strip():
-        return True, ""  # Boleh kosong
+        return True, ""
     value = value.strip()
     if not value.startswith("62"):
         return False, "❌ Nomor Whatsapp salah!\nHarus diawali dengan 62\nFormat yang benar: 62 8XX-XXXX-XXXX"
@@ -136,14 +134,14 @@ def validasi_wa(value):
 
 def validasi_id(value):
     if not value.strip():
-        return True, ""  # Boleh kosong
+        return True, ""
     if not value.strip().isdigit():
         return False, "❌ ID hanya boleh berisi angka!\nContoh yang benar: 12345"
     return True, ""
 
 def validasi_username(value):
     if not value.strip():
-        return True, ""  # Boleh kosong
+        return True, ""
     value = value.strip()
     if value.isdigit():
         return False, "❌ Username tidak boleh angka semua!\nHarus ada kombinasi huruf\nContoh: @budi123 atau royal"
@@ -153,7 +151,7 @@ def validasi_username(value):
 
 def validasi_nominal(value):
     if not value.strip():
-        return True, ""  # Boleh kosong
+        return True, ""
     try:
         angka = int(str(value).replace(".", "").replace(",", "").strip())
         if angka < 4000:
@@ -164,38 +162,28 @@ def validasi_nominal(value):
 
 def validasi_jumlah(value):
     if not value.strip():
-        return True, ""  # Boleh kosong
-
+        return True, ""
     value = value.strip()
-
-    # Cek lambang titik
     if "." in value:
         return False, f"❌ Jumlah tidak boleh menggunakan titik!\nKamu memasukan: {value}\nMasukan angka saja tanpa lambang: {value.replace('.', '')}"
-
-    # Cek lambang koma
     if "," in value:
         return False, f"❌ Jumlah tidak boleh menggunakan koma!\nKamu memasukan: {value}\nMasukan angka saja tanpa lambang: {value.replace(',', '')}"
-
-    # Cek karakter lain
     if not value.isdigit():
         return False, f"❌ Jumlah hanya boleh berisi angka!\nKamu memasukan: {value}\nMasukan angka saja tanpa lambang"
-
-    # Cek minimal 3 digit
     if len(value) < 3:
         return False, f"❌ Jumlah minimal 3 digit!\nKamu memasukan: {value}\nMinimal: 100"
-
     return True, ""
 
 def validasi_rd_hdi(value):
     if not value.strip():
-        return True, ""  # Boleh kosong
+        return True, ""
     if not re.match(r'^[a-zA-Z\s/]+$', value.strip()):
         return False, "❌ RD/HDI hanya boleh berisi huruf!\nContoh yang benar: RD atau HDI"
     return True, ""
 
 def validasi_bank(value):
     if not value.strip():
-        return True, ""  # Boleh kosong
+        return True, ""
     if not re.match(r'^[a-zA-Z\s]+$', value.strip()):
         return False, "❌ Bank hanya boleh berisi huruf!\nContoh yang benar: BCA atau DANA"
     return True, ""
@@ -226,6 +214,22 @@ def format_ulang_sheet(sheet):
                 })
     except Exception as e:
         logger.error(f"❌ Gagal format: {e}")
+
+# ── Hitung total HANYA untuk tanggal tertentu
+def hitung_total_hari(all_data, target_date):
+    total_nominal = 0
+    total_jumlah  = 0.0
+    for row in all_data[1:]:
+        if is_special(row):
+            continue
+        try:
+            dt_row = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+            if dt_row.date() == target_date:
+                total_nominal += parse_rupiah(row[4])
+                total_jumlah  += parse_jumlah_dari_sheet(row[5])
+        except:
+            continue
+    return total_nominal, total_jumlah
 
 # ── Tambah total + pembatas + shift saat hari berganti
 def tambah_total_dan_pembatas(sheet, dt_sekarang):
@@ -264,21 +268,11 @@ def tambah_total_dan_pembatas(sheet, dt_sekarang):
             if is_total(row) and label_total in str(row[0]):
                 return
 
-        # Hitung total
-        total_nominal = 0
-        total_jumlah  = 0.0
-        for row in all_data[1:]:
-            if is_special(row):
-                continue
-            try:
-                dt_row = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
-                if dt_row.date() == dt_terakhir.date():
-                    total_nominal += parse_rupiah(row[4])
-                    total_jumlah  += parse_jumlah_dari_sheet(row[5])
-            except:
-                continue
+        # Hitung total HANYA untuk hari terakhir saja
+        total_nominal, total_jumlah = hitung_total_hari(
+            all_data, dt_terakhir.date()
+        )
 
-        # Format total jumlah (sudah dalam satuan ribuan karena sudah dibagi 1000 saat input)
         if total_jumlah == int(total_jumlah):
             tj_str = str(int(total_jumlah))
         else:
@@ -296,7 +290,7 @@ def tambah_total_dan_pembatas(sheet, dt_sekarang):
         sheet.append_row([get_shift(dt_sekarang)] + [""] * 7)
 
         format_ulang_sheet(sheet)
-        logger.info(f"✅ Total + pembatas + shift ditambahkan!")
+        logger.info(f"✅ Total + pembatas + shift ditambahkan: {label_total}")
 
     except Exception as e:
         logger.error(f"❌ Gagal tambah total: {e}")
@@ -307,7 +301,6 @@ def cek_tambah_shift(sheet, dt_sekarang):
         all_data  = sheet.get_all_values()
         shift_now = get_shift(dt_sekarang)
 
-        # Cari shift terakhir
         shift_terakhir = None
         for row in reversed(all_data[1:]):
             if is_shift(row):
@@ -317,13 +310,11 @@ def cek_tambah_shift(sheet, dt_sekarang):
         if shift_terakhir == shift_now:
             return
 
-        # Cek apakah sudah ada pembatas hari ini
-        ada_pembatas_hari_ini = False
         label_hari_ini        = format_label_hari(dt_sekarang)
-        for row in all_data[1:]:
-            if is_pembatas(row) and label_hari_ini in str(row[0]):
-                ada_pembatas_hari_ini = True
-                break
+        ada_pembatas_hari_ini = any(
+            is_pembatas(row) and label_hari_ini in str(row[0])
+            for row in all_data[1:]
+        )
 
         if ada_pembatas_hari_ini:
             sheet.append_row([shift_now] + [""] * 7)
@@ -366,7 +357,6 @@ def rapikan_sheet(sheet):
         data_rows  = [r for r in new_rows if not is_special(r)]
         empty_rows = [r for r in new_rows if is_empty(r)]
 
-        # Sort berdasarkan timestamp
         def get_ts(row):
             try:
                 return datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
@@ -375,7 +365,6 @@ def rapikan_sheet(sheet):
 
         data_rows.sort(key=get_ts)
 
-        # Kelompokkan per hari
         grouped = {}
         for row in data_rows:
             try:
@@ -413,6 +402,7 @@ def rapikan_sheet(sheet):
                 final_rows.append(row)
 
             # Total hanya untuk hari yang sudah selesai
+            # Hitung HANYA dari data hari itu saja
             if d < hari_ini:
                 tj = sum(parse_jumlah_dari_sheet(r[5]) for r in rows_hari)
                 tn = sum(parse_rupiah(r[4]) for r in rows_hari)
@@ -474,8 +464,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or not msg.text:
         return
 
-    text   = msg.text
-    dt_now = datetime.now(WIB)
+    text      = msg.text
+    dt_now    = datetime.now(WIB)
     timestamp = dt_now.strftime("%Y-%m-%d %H:%M:%S")
 
     if ":" not in text:
@@ -483,7 +473,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = parse_message(text)
 
-    # ── Validasi semua field
+    # ── Validasi
     validasi_list = [
         (validasi_wa,       data["wa"]),
         (validasi_id,       data["id"]),
