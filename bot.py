@@ -276,13 +276,10 @@ def tambah_total_dan_pembatas(sheet, dt_sekarang):
 
         sheet.append_row([label_total, "", "", "", tn_str, tj_str, "", ""])
         format_baris_baru(sheet, total_rows + 1, "total")
-
         sheet.append_row([format_label_hari(dt_sekarang)] + [""] * 7)
         format_baris_baru(sheet, total_rows + 2, "pembatas")
-
         sheet.append_row([get_shift(dt_sekarang)] + [""] * 7)
         format_baris_baru(sheet, total_rows + 3, "shift")
-
         logger.info(f"✅ Total + pembatas + shift: {label_total}")
 
     except Exception as e:
@@ -317,15 +314,21 @@ def cek_tambah_shift(sheet, dt_sekarang):
     except Exception as e:
         logger.error(f"❌ Gagal cek shift: {e}")
 
-# ── Sort + format ulang (HANYA dipanggil saat edit atau hapus)
-def sort_dan_format(sheet):
+# ── Sort + format (termasuk row baru jika ada)
+def sort_dan_format(sheet, row_baru=None):
     try:
-        all_data = sheet.get_all_values()
+        all_data  = sheet.get_all_values()
         if len(all_data) <= 1:
             return
 
         header    = all_data[0]
+
+        # Ambil hanya data rows (bukan special)
         data_rows = [r for r in all_data[1:] if not is_special(r)]
+
+        # Tambahkan row baru ke data_rows sebelum sort
+        if row_baru is not None:
+            data_rows.append(row_baru)
 
         def get_ts(row):
             try:
@@ -481,12 +484,14 @@ async def proses_pesan(msg, context, is_edit=False):
     if ":" not in text:
         return
 
+    # ── Tentukan timestamp
     if is_edit and msg.message_id in saved_messages:
         old_info  = saved_messages[msg.message_id]
         timestamp = old_info["timestamp"]
         logger.info(f"✅ Edit detected, timestamp lama: {timestamp}")
         try:
             sheet = get_sheet()
+            # Hapus data lama dari sheet
             hapus_dari_sheet(sheet, old_info["timestamp"])
             await context.bot.delete_message(
                 chat_id=old_info["chat_id"],
@@ -530,14 +535,19 @@ async def proses_pesan(msg, context, is_edit=False):
 
     try:
         sheet = get_sheet()
-        tambah_total_dan_pembatas(sheet, dt_now)
-        cek_tambah_shift(sheet, dt_now)
-        sheet.append_row(row)
-        logger.info(f"✅ Saved | {data['username']} | WA: {data['wa']}")
 
-        # Sort hanya jika ini adalah hasil EDIT
         if is_edit:
-            sort_dan_format(sheet)
+            # Saat edit → sort sekalian masukkan row baru
+            # Tidak perlu append_row terpisah
+            tambah_total_dan_pembatas(sheet, dt_now)
+            sort_dan_format(sheet, row_baru=row)
+            logger.info(f"✅ Saved+Sorted | {data['username']} | WA: {data['wa']}")
+        else:
+            # Pesan baru → append saja (hemat API)
+            tambah_total_dan_pembatas(sheet, dt_now)
+            cek_tambah_shift(sheet, dt_now)
+            sheet.append_row(row)
+            logger.info(f"✅ Saved | {data['username']} | WA: {data['wa']}")
 
         bot_msg = await msg.reply_text(
             f"✅ Data berhasil dicatat!\n\n"
@@ -627,7 +637,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 sheet = get_sheet()
                 hapus_dari_sheet(sheet, info["timestamp"])
-                # Sort setelah hapus
                 sort_dan_format(sheet)
                 await query.edit_message_text("🗑️ Data berhasil dihapus!")
                 del saved_messages[orig_msg_id]
