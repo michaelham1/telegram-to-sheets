@@ -2,6 +2,7 @@ import logging
 import os
 import json
 import re
+import time
 from datetime import datetime
 import pytz
 from dotenv import load_dotenv
@@ -40,7 +41,7 @@ BULAN = {
     9: "SEPTEMBER", 10: "OKTOBER", 11: "NOVEMBER", 12: "DESEMBER"
 }
 
-# ── Simpan mapping pesan → data sheet
+# ── Simpan mapping pesan
 saved_messages = {}
 
 # ── Google Sheets Setup
@@ -199,32 +200,34 @@ def validasi_bank(value):
         return False, "❌ Bank hanya boleh berisi huruf!\nContoh yang benar: BCA atau DANA"
     return True, ""
 
-# ── Format ulang sheet
-def format_ulang_sheet(sheet):
+# ── Format HANYA baris baru (bukan seluruh sheet!)
+def format_baris_baru(sheet, idx, tipe):
+    """
+    Format hanya 1 baris yang baru ditambahkan.
+    Tidak format seluruh sheet → hemat API calls!
+    """
     try:
-        all_data = sheet.get_all_values()
-        for idx, row in enumerate(all_data[1:], start=2):
-            if is_pembatas(row):
-                sheet.merge_cells(f"A{idx}:H{idx}")
-                sheet.format(f"A{idx}:H{idx}", {
-                    "horizontalAlignment": "CENTER",
-                    "textFormat"         : {"bold": True},
-                    "backgroundColor"    : {"red": 0.8, "green": 0.8, "blue": 0.8}
-                })
-            elif is_total(row):
-                sheet.format(f"A{idx}:H{idx}", {
-                    "textFormat"      : {"bold": True},
-                    "backgroundColor" : {"red": 1.0, "green": 0.95, "blue": 0.4}
-                })
-            elif is_shift(row):
-                sheet.merge_cells(f"A{idx}:H{idx}")
-                sheet.format(f"A{idx}:H{idx}", {
-                    "horizontalAlignment": "CENTER",
-                    "textFormat"         : {"bold": True, "italic": True},
-                    "backgroundColor"    : {"red": 0.9, "green": 0.95, "blue": 1.0}
-                })
+        if tipe == "pembatas":
+            sheet.merge_cells(f"A{idx}:H{idx}")
+            sheet.format(f"A{idx}:H{idx}", {
+                "horizontalAlignment": "CENTER",
+                "textFormat"         : {"bold": True},
+                "backgroundColor"    : {"red": 0.8, "green": 0.8, "blue": 0.8}
+            })
+        elif tipe == "total":
+            sheet.format(f"A{idx}:H{idx}", {
+                "textFormat"      : {"bold": True},
+                "backgroundColor" : {"red": 1.0, "green": 0.95, "blue": 0.4}
+            })
+        elif tipe == "shift":
+            sheet.merge_cells(f"A{idx}:H{idx}")
+            sheet.format(f"A{idx}:H{idx}", {
+                "horizontalAlignment": "CENTER",
+                "textFormat"         : {"bold": True, "italic": True},
+                "backgroundColor"    : {"red": 0.9, "green": 0.95, "blue": 1.0}
+            })
     except Exception as e:
-        logger.error(f"❌ Gagal format: {e}")
+        logger.error(f"❌ Gagal format baris: {e}")
 
 # ── Hitung total HANYA untuk 1 hari
 def hitung_total_satu_hari(all_data, target_date):
@@ -243,14 +246,17 @@ def hitung_total_satu_hari(all_data, target_date):
             continue
     return total_nominal, total_jumlah
 
-# ── Tambah total + pembatas + shift
+# ── Tambah total + pembatas + shift (format hanya baris baru)
 def tambah_total_dan_pembatas(sheet, dt_sekarang):
     try:
         all_data = sheet.get_all_values()
-        if len(all_data) <= 1:
+        total_rows = len(all_data)
+
+        if total_rows <= 1:
             sheet.append_row([format_label_hari(dt_sekarang)] + [""] * 7)
+            format_baris_baru(sheet, total_rows + 1, "pembatas")
             sheet.append_row([get_shift(dt_sekarang)] + [""] * 7)
-            format_ulang_sheet(sheet)
+            format_baris_baru(sheet, total_rows + 2, "shift")
             return
 
         baris_terakhir = None
@@ -261,8 +267,9 @@ def tambah_total_dan_pembatas(sheet, dt_sekarang):
 
         if baris_terakhir is None:
             sheet.append_row([format_label_hari(dt_sekarang)] + [""] * 7)
+            format_baris_baru(sheet, total_rows + 1, "pembatas")
             sheet.append_row([get_shift(dt_sekarang)] + [""] * 7)
-            format_ulang_sheet(sheet)
+            format_baris_baru(sheet, total_rows + 2, "shift")
             return
 
         try:
@@ -285,16 +292,24 @@ def tambah_total_dan_pembatas(sheet, dt_sekarang):
         tn_str = format_rupiah(str(total_nominal))
         tj_str = format_total_jumlah(total_jumlah)
 
+        # Tambah total
         sheet.append_row([label_total, "", "", "", tn_str, tj_str, "", ""])
+        format_baris_baru(sheet, total_rows + 1, "total")
+
+        # Tambah pembatas hari baru
         sheet.append_row([format_label_hari(dt_sekarang)] + [""] * 7)
+        format_baris_baru(sheet, total_rows + 2, "pembatas")
+
+        # Tambah shift
         sheet.append_row([get_shift(dt_sekarang)] + [""] * 7)
-        format_ulang_sheet(sheet)
+        format_baris_baru(sheet, total_rows + 3, "shift")
+
         logger.info(f"✅ Total + pembatas + shift: {label_total}")
 
     except Exception as e:
         logger.error(f"❌ Gagal tambah total: {e}")
 
-# ── Cek shift baru
+# ── Cek shift baru (format hanya baris baru)
 def cek_tambah_shift(sheet, dt_sekarang):
     try:
         all_data  = sheet.get_all_values()
@@ -316,8 +331,9 @@ def cek_tambah_shift(sheet, dt_sekarang):
         )
 
         if ada_pembatas_hari_ini:
+            total_rows = len(all_data)
             sheet.append_row([shift_now] + [""] * 7)
-            format_ulang_sheet(sheet)
+            format_baris_baru(sheet, total_rows + 1, "shift")
             logger.info(f"✅ Shift: {shift_now}")
 
     except Exception as e:
@@ -343,109 +359,12 @@ def hapus_dari_sheet(sheet, timestamp):
             sheet.append_row(header)
             if new_rows:
                 sheet.append_rows(new_rows)
-            rapikan_sheet(sheet)
             logger.info(f"✅ Data dihapus: {timestamp}")
             return True
         return False
     except Exception as e:
         logger.error(f"❌ Gagal hapus: {e}")
         return False
-
-# ── Rapikan sheet
-def rapikan_sheet(sheet):
-    try:
-        all_data = sheet.get_all_values()
-        if len(all_data) <= 1:
-            return
-
-        header = all_data[0]
-        rows   = all_data[1:]
-
-        new_rows = []
-        i = 0
-        while i < len(rows):
-            if is_empty(rows[i]):
-                kosong_count = 0
-                j = i
-                while j < len(rows) and is_empty(rows[j]):
-                    kosong_count += 1
-                    j += 1
-                if kosong_count == 1:
-                    i += 1
-                else:
-                    for k in range(kosong_count):
-                        new_rows.append(rows[i + k])
-                    i += kosong_count
-            else:
-                new_rows.append(rows[i])
-                i += 1
-
-        data_rows  = [r for r in new_rows if not is_special(r)]
-        empty_rows = [r for r in new_rows if is_empty(r)]
-
-        def get_ts(row):
-            try:
-                return datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
-            except:
-                return datetime.min
-
-        data_rows.sort(key=get_ts)
-
-        grouped = {}
-        for row in data_rows:
-            try:
-                d = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S").date()
-            except:
-                d = None
-            if d not in grouped:
-                grouped[d] = []
-            grouped[d].append(row)
-
-        sorted_dates = sorted([d for d in grouped.keys() if d is not None])
-        hari_ini     = datetime.now(WIB).date()
-        final_rows   = []
-
-        for i, d in enumerate(sorted_dates):
-            rows_hari     = grouped[d]
-            dt_hari       = datetime.combine(d, datetime.min.time())
-            current_shift = None
-
-            final_rows.append([format_label_hari(dt_hari)] + [""] * 7)
-
-            for row in rows_hari:
-                try:
-                    dt_row    = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
-                    row_shift = get_shift(dt_row)
-                except:
-                    row_shift = None
-
-                if row_shift != current_shift:
-                    current_shift = row_shift
-                    final_rows.append([current_shift] + [""] * 7)
-
-                final_rows.append(row)
-
-            if d < hari_ini:
-                tn = sum(parse_rupiah(r[4]) for r in rows_hari)
-                tj = sum(parse_jumlah_dari_sheet(r[5]) for r in rows_hari)
-                tn_str = format_rupiah(str(tn))
-                tj_str = format_total_jumlah(tj)
-                final_rows.append([
-                    format_label_total(dt_hari),
-                    "", "", "", tn_str, tj_str, "", ""
-                ])
-
-        final_rows += empty_rows
-
-        sheet.clear()
-        sheet.append_row(header)
-        if final_rows:
-            sheet.append_rows(final_rows)
-
-        format_ulang_sheet(sheet)
-        logger.info("✅ Sheet berhasil dirapikan!")
-    except Exception as e:
-        logger.error(f"❌ Gagal rapikan: {e}")
 
 # ── Parse pesan
 def parse_message(text):
@@ -475,7 +394,7 @@ def parse_message(text):
             data["wa"] = value
     return data
 
-# ── Keyboard tombol hapus
+# ── Keyboard
 def buat_keyboard_hapus(orig_msg_id, user_id):
     return InlineKeyboardMarkup([[
         InlineKeyboardButton(
@@ -484,7 +403,6 @@ def buat_keyboard_hapus(orig_msg_id, user_id):
         )
     ]])
 
-# ── Keyboard konfirmasi hapus
 def buat_keyboard_konfirmasi_hapus(orig_msg_id, user_id):
     return InlineKeyboardMarkup([[
         InlineKeyboardButton(
@@ -521,7 +439,6 @@ async def proses_pesan(msg, context, is_edit=False):
                 chat_id=old_info["chat_id"],
                 message_id=old_info["bot_msg_id"]
             )
-            logger.info(f"✅ Data lama dihapus untuk edit")
         except Exception as e:
             logger.error(f"❌ Gagal hapus data lama: {e}")
         del saved_messages[msg.message_id]
@@ -562,11 +479,14 @@ async def proses_pesan(msg, context, is_edit=False):
 
     try:
         sheet = get_sheet()
+
+        # Tambah total + pembatas + shift jika perlu
         tambah_total_dan_pembatas(sheet, dt_now)
         cek_tambah_shift(sheet, dt_now)
+
+        # Simpan data baru (append saja, tidak perlu rapikan)
         sheet.append_row(row)
         logger.info(f"✅ Saved | {data['username']} | WA: {data['wa']}")
-        rapikan_sheet(sheet)
 
         bot_msg = await msg.reply_text(
             f"✅ Data berhasil dicatat!\n\n"
@@ -606,12 +526,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.answer()
 
-    # ── Tombol HAPUS (tampilkan konfirmasi)
     if query.data.startswith("HAPUS|"):
         parts = query.data.split("|")
         if len(parts) != 3:
             return
-
         orig_msg_id   = int(parts[1])
         owner_user_id = int(parts[2])
 
@@ -634,12 +552,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── Tombol HAPUS_YA
     if query.data.startswith("HAPUS_YA|"):
         parts = query.data.split("|")
         if len(parts) != 3:
             return
-
         orig_msg_id   = int(parts[1])
         owner_user_id = int(parts[2])
 
@@ -672,12 +588,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ Data tidak ditemukan atau sudah dihapus!")
         return
 
-    # ── Tombol HAPUS_BATAL
     if query.data.startswith("HAPUS_BATAL|"):
         parts = query.data.split("|")
         if len(parts) != 3:
             return
-
         orig_msg_id   = int(parts[1])
         owner_user_id = int(parts[2])
 
