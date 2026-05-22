@@ -2,7 +2,6 @@ import logging
 import os
 import json
 import re
-import time
 from datetime import datetime
 import pytz
 from dotenv import load_dotenv
@@ -14,22 +13,18 @@ from telegram.ext import (
     CallbackQueryHandler, filters, ContextTypes
 )
 
-# ── Load .env
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
-# ── Logging
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ── Timezone WIB
 WIB = pytz.timezone("Asia/Jakarta")
 
-# ── Hari & Bulan
 HARI = {
     "Monday": "SENIN", "Tuesday": "SELASA", "Wednesday": "RABU",
     "Thursday": "KAMIS", "Friday": "JUMAT", "Saturday": "SABTU",
@@ -41,10 +36,8 @@ BULAN = {
     9: "SEPTEMBER", 10: "OKTOBER", 11: "NOVEMBER", 12: "DESEMBER"
 }
 
-# ── Simpan mapping pesan
 saved_messages = {}
 
-# ── Google Sheets Setup
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -62,7 +55,6 @@ def get_sheet():
     client = gspread.authorize(creds)
     return client.open_by_key(SPREADSHEET_ID).worksheet("TRANSAKSI")
 
-# ── Format label
 def format_label_hari(dt):
     return f"═══════ {HARI[dt.strftime('%A')]}, {dt.day} {BULAN[dt.month]} {dt.year} ═══════"
 
@@ -78,7 +70,6 @@ def get_shift(dt):
     else:
         return "── SHIFT SORE ──"
 
-# ── Cek tipe baris
 def is_pembatas(row):
     return any("═══════" in str(cell) for cell in row)
 
@@ -94,7 +85,6 @@ def is_empty(row):
 def is_special(row):
     return is_pembatas(row) or is_total(row) or is_shift(row) or is_empty(row)
 
-# ── Format angka
 def format_rupiah(value):
     try:
         angka = int(str(value).replace(".", "").replace(",", "").strip())
@@ -131,7 +121,6 @@ def format_total_jumlah(total):
         return str(int(total))
     return str(round(total, 10)).replace(".", ",")
 
-# ── Validasi
 def validasi_wa(value):
     if not value.strip():
         return True, ""
@@ -200,12 +189,7 @@ def validasi_bank(value):
         return False, "❌ Bank hanya boleh berisi huruf!\nContoh yang benar: BCA atau DANA"
     return True, ""
 
-# ── Format HANYA baris baru (bukan seluruh sheet!)
 def format_baris_baru(sheet, idx, tipe):
-    """
-    Format hanya 1 baris yang baru ditambahkan.
-    Tidak format seluruh sheet → hemat API calls!
-    """
     try:
         if tipe == "pembatas":
             sheet.merge_cells(f"A{idx}:H{idx}")
@@ -229,7 +213,6 @@ def format_baris_baru(sheet, idx, tipe):
     except Exception as e:
         logger.error(f"❌ Gagal format baris: {e}")
 
-# ── Hitung total HANYA untuk 1 hari
 def hitung_total_satu_hari(all_data, target_date):
     total_nominal = 0
     total_jumlah  = 0.0
@@ -246,10 +229,9 @@ def hitung_total_satu_hari(all_data, target_date):
             continue
     return total_nominal, total_jumlah
 
-# ── Tambah total + pembatas + shift (format hanya baris baru)
 def tambah_total_dan_pembatas(sheet, dt_sekarang):
     try:
-        all_data = sheet.get_all_values()
+        all_data   = sheet.get_all_values()
         total_rows = len(all_data)
 
         if total_rows <= 1:
@@ -292,15 +274,12 @@ def tambah_total_dan_pembatas(sheet, dt_sekarang):
         tn_str = format_rupiah(str(total_nominal))
         tj_str = format_total_jumlah(total_jumlah)
 
-        # Tambah total
         sheet.append_row([label_total, "", "", "", tn_str, tj_str, "", ""])
         format_baris_baru(sheet, total_rows + 1, "total")
 
-        # Tambah pembatas hari baru
         sheet.append_row([format_label_hari(dt_sekarang)] + [""] * 7)
         format_baris_baru(sheet, total_rows + 2, "pembatas")
 
-        # Tambah shift
         sheet.append_row([get_shift(dt_sekarang)] + [""] * 7)
         format_baris_baru(sheet, total_rows + 3, "shift")
 
@@ -309,7 +288,6 @@ def tambah_total_dan_pembatas(sheet, dt_sekarang):
     except Exception as e:
         logger.error(f"❌ Gagal tambah total: {e}")
 
-# ── Cek shift baru (format hanya baris baru)
 def cek_tambah_shift(sheet, dt_sekarang):
     try:
         all_data  = sheet.get_all_values()
@@ -339,7 +317,86 @@ def cek_tambah_shift(sheet, dt_sekarang):
     except Exception as e:
         logger.error(f"❌ Gagal cek shift: {e}")
 
-# ── Hapus data dari sheet
+# ── Sort + format ulang (HANYA dipanggil saat edit atau hapus)
+def sort_dan_format(sheet):
+    try:
+        all_data = sheet.get_all_values()
+        if len(all_data) <= 1:
+            return
+
+        header    = all_data[0]
+        data_rows = [r for r in all_data[1:] if not is_special(r)]
+
+        def get_ts(row):
+            try:
+                return datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+            except:
+                return datetime.min
+
+        data_rows.sort(key=get_ts)
+
+        grouped = {}
+        for row in data_rows:
+            try:
+                d = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S").date()
+            except:
+                d = None
+            if d not in grouped:
+                grouped[d] = []
+            grouped[d].append(row)
+
+        sorted_dates = sorted([d for d in grouped.keys() if d is not None])
+        hari_ini     = datetime.now(WIB).date()
+        final_rows   = []
+
+        for i, d in enumerate(sorted_dates):
+            rows_hari     = grouped[d]
+            dt_hari       = datetime.combine(d, datetime.min.time())
+            current_shift = None
+
+            final_rows.append([format_label_hari(dt_hari)] + [""] * 7)
+
+            for row in rows_hari:
+                try:
+                    dt_row    = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+                    row_shift = get_shift(dt_row)
+                except:
+                    row_shift = None
+
+                if row_shift != current_shift:
+                    current_shift = row_shift
+                    final_rows.append([current_shift] + [""] * 7)
+
+                final_rows.append(row)
+
+            if d < hari_ini:
+                tn = sum(parse_rupiah(r[4]) for r in rows_hari)
+                tj = sum(parse_jumlah_dari_sheet(r[5]) for r in rows_hari)
+                final_rows.append([
+                    format_label_total(dt_hari),
+                    "", "", "", format_rupiah(str(tn)),
+                    format_total_jumlah(tj), "", ""
+                ])
+
+        sheet.clear()
+        sheet.append_row(header)
+        if final_rows:
+            sheet.append_rows(final_rows)
+
+        # Format hanya baris special
+        all_data_baru = sheet.get_all_values()
+        for idx, row in enumerate(all_data_baru[1:], start=2):
+            if is_pembatas(row):
+                format_baris_baru(sheet, idx, "pembatas")
+            elif is_total(row):
+                format_baris_baru(sheet, idx, "total")
+            elif is_shift(row):
+                format_baris_baru(sheet, idx, "shift")
+
+        logger.info("✅ Sheet di-sort dan diformat!")
+    except Exception as e:
+        logger.error(f"❌ Gagal sort: {e}")
+
 def hapus_dari_sheet(sheet, timestamp):
     try:
         all_data  = sheet.get_all_values()
@@ -366,7 +423,6 @@ def hapus_dari_sheet(sheet, timestamp):
         logger.error(f"❌ Gagal hapus: {e}")
         return False
 
-# ── Parse pesan
 def parse_message(text):
     data = {
         "id": "", "username": "", "nominal": "",
@@ -394,7 +450,6 @@ def parse_message(text):
             data["wa"] = value
     return data
 
-# ── Keyboard
 def buat_keyboard_hapus(orig_msg_id, user_id):
     return InlineKeyboardMarkup([[
         InlineKeyboardButton(
@@ -415,7 +470,6 @@ def buat_keyboard_konfirmasi_hapus(orig_msg_id, user_id):
         ),
     ]])
 
-# ── Proses pesan
 async def proses_pesan(msg, context, is_edit=False):
     if not msg or not msg.text:
         return
@@ -427,7 +481,6 @@ async def proses_pesan(msg, context, is_edit=False):
     if ":" not in text:
         return
 
-    # ── Tentukan timestamp
     if is_edit and msg.message_id in saved_messages:
         old_info  = saved_messages[msg.message_id]
         timestamp = old_info["timestamp"]
@@ -448,7 +501,6 @@ async def proses_pesan(msg, context, is_edit=False):
     dt_now = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
     data   = parse_message(text)
 
-    # ── Validasi
     validasi_list = [
         (validasi_wa,       data["wa"]),
         (validasi_id,       data["id"]),
@@ -465,7 +517,6 @@ async def proses_pesan(msg, context, is_edit=False):
             await msg.reply_text(error_msg)
             return
 
-    # ── Format
     if data["nominal"]:
         data["nominal"] = format_rupiah(data["nominal"])
     if data["jumlah"]:
@@ -479,14 +530,14 @@ async def proses_pesan(msg, context, is_edit=False):
 
     try:
         sheet = get_sheet()
-
-        # Tambah total + pembatas + shift jika perlu
         tambah_total_dan_pembatas(sheet, dt_now)
         cek_tambah_shift(sheet, dt_now)
-
-        # Simpan data baru (append saja, tidak perlu rapikan)
         sheet.append_row(row)
         logger.info(f"✅ Saved | {data['username']} | WA: {data['wa']}")
+
+        # Sort hanya jika ini adalah hasil EDIT
+        if is_edit:
+            sort_dan_format(sheet)
 
         bot_msg = await msg.reply_text(
             f"✅ Data berhasil dicatat!\n\n"
@@ -511,14 +562,12 @@ async def proses_pesan(msg, context, is_edit=False):
         logger.error(f"❌ Failed: {e}")
         await msg.reply_text("❌ Gagal menyimpan data!")
 
-# ── Handler pesan
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.edited_message:
         await proses_pesan(update.edited_message, context, is_edit=True)
     elif update.message:
         await proses_pesan(update.message, context, is_edit=False)
 
-# ── Handler callback
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query   = update.callback_query
     user_id = query.from_user.id
@@ -578,6 +627,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 sheet = get_sheet()
                 hapus_dari_sheet(sheet, info["timestamp"])
+                # Sort setelah hapus
+                sort_dan_format(sheet)
                 await query.edit_message_text("🗑️ Data berhasil dihapus!")
                 del saved_messages[orig_msg_id]
                 logger.info(f"✅ Data dihapus via tombol")
@@ -601,7 +652,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-# ── Main
 def main():
     logger.info("🚀 Bot starting...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
