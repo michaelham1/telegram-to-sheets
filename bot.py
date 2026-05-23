@@ -121,16 +121,19 @@ def format_total_jumlah(total):
         return str(int(total))
     return str(round(total, 10)).replace(".", ",")
 
+# ── Bersihkan nomor WA
+def bersihkan_wa(value):
+    return re.sub(r'[^0-9]', '', value)
+
+# ── Validasi
 def validasi_wa(value):
     if not value.strip():
         return True, ""
-    value = value.strip()
-    if not value.startswith("62"):
-        return False, "❌ Nomor Whatsapp salah!\nHarus diawali dengan 62\nFormat yang benar: 62 8XX-XXXX-XXXX"
     if re.search(r'[a-zA-Z]', value):
-        return False, "❌ Nomor Whatsapp salah!\nTidak boleh ada huruf\nFormat yang benar: 62 8XX-XXXX-XXXX"
-    if not re.match(r'^62[\s\d\-]+\d$', value):
-        return False, "❌ Nomor Whatsapp salah!\nTidak boleh ada karakter lain di ujung\nFormat yang benar: 62 8XX-XXXX-XXXX"
+        return False, "❌ Nomor Whatsapp tidak boleh ada huruf!\nContoh: 628123456789 atau 08123456789"
+    bersih = bersihkan_wa(value.strip())
+    if len(bersih) < 9:
+        return False, f"❌ Nomor Whatsapp terlalu pendek!\nKamu masukan: {bersih}\nMinimal 9 digit"
     return True, ""
 
 def validasi_id(value):
@@ -314,19 +317,15 @@ def cek_tambah_shift(sheet, dt_sekarang):
     except Exception as e:
         logger.error(f"❌ Gagal cek shift: {e}")
 
-# ── Sort + format (termasuk row baru jika ada)
 def sort_dan_format(sheet, row_baru=None):
     try:
-        all_data  = sheet.get_all_values()
+        all_data = sheet.get_all_values()
         if len(all_data) <= 1:
             return
 
         header    = all_data[0]
-
-        # Ambil hanya data rows (bukan special)
         data_rows = [r for r in all_data[1:] if not is_special(r)]
 
-        # Tambahkan row baru ke data_rows sebelum sort
         if row_baru is not None:
             data_rows.append(row_baru)
 
@@ -386,7 +385,6 @@ def sort_dan_format(sheet, row_baru=None):
         if final_rows:
             sheet.append_rows(final_rows)
 
-        # Format hanya baris special
         all_data_baru = sheet.get_all_values()
         for idx, row in enumerate(all_data_baru[1:], start=2):
             if is_pembatas(row):
@@ -484,14 +482,12 @@ async def proses_pesan(msg, context, is_edit=False):
     if ":" not in text:
         return
 
-    # ── Tentukan timestamp
     if is_edit and msg.message_id in saved_messages:
         old_info  = saved_messages[msg.message_id]
         timestamp = old_info["timestamp"]
         logger.info(f"✅ Edit detected, timestamp lama: {timestamp}")
         try:
             sheet = get_sheet()
-            # Hapus data lama dari sheet
             hapus_dari_sheet(sheet, old_info["timestamp"])
             await context.bot.delete_message(
                 chat_id=old_info["chat_id"],
@@ -506,6 +502,7 @@ async def proses_pesan(msg, context, is_edit=False):
     dt_now = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
     data   = parse_message(text)
 
+    # ── Validasi
     validasi_list = [
         (validasi_wa,       data["wa"]),
         (validasi_id,       data["id"]),
@@ -522,6 +519,11 @@ async def proses_pesan(msg, context, is_edit=False):
             await msg.reply_text(error_msg)
             return
 
+    # ── Bersihkan WA (hapus strip, spasi, dll)
+    if data["wa"]:
+        data["wa"] = bersihkan_wa(data["wa"])
+
+    # ── Format
     if data["nominal"]:
         data["nominal"] = format_rupiah(data["nominal"])
     if data["jumlah"]:
@@ -537,13 +539,10 @@ async def proses_pesan(msg, context, is_edit=False):
         sheet = get_sheet()
 
         if is_edit:
-            # Saat edit → sort sekalian masukkan row baru
-            # Tidak perlu append_row terpisah
             tambah_total_dan_pembatas(sheet, dt_now)
             sort_dan_format(sheet, row_baru=row)
             logger.info(f"✅ Saved+Sorted | {data['username']} | WA: {data['wa']}")
         else:
-            # Pesan baru → append saja (hemat API)
             tambah_total_dan_pembatas(sheet, dt_now)
             cek_tambah_shift(sheet, dt_now)
             sheet.append_row(row)
