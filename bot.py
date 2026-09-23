@@ -36,7 +36,6 @@ BULAN = {
     9: "SEPTEMBER", 10: "OKTOBER", 11: "NOVEMBER", 12: "DESEMBER"
 }
 
-pending_data   = {}
 saved_messages = {}
 
 SCOPES = [
@@ -54,7 +53,7 @@ def get_sheet():
             "telegram-bot-496706-e8c55e2944e2.json", scopes=SCOPES
         )
     client = gspread.authorize(creds)
-    return client.open_by_key(SPREADSHEET_ID).worksheet("BONGKARAN")
+    return client.open_by_key(SPREADSHEET_ID).worksheet("TRANSAKSI")
 
 def format_label_hari(dt):
     return f"═══════ {HARI[dt.strftime('%A')]}, {dt.day} {BULAN[dt.month]} {dt.year} ═══════"
@@ -62,17 +61,29 @@ def format_label_hari(dt):
 def format_label_total(dt):
     return f"TOTAL {HARI[dt.strftime('%A')]}, {dt.day} {BULAN[dt.month]} {dt.year}"
 
+def get_shift(dt):
+    jam = dt.hour
+    if 0 <= jam < 8:
+        return "── SHIFT SUBUH ──"
+    elif 8 <= jam < 16:
+        return "── SHIFT PAGI ──"
+    else:
+        return "── SHIFT SORE ──"
+
 def is_pembatas(row):
     return any("═══════" in str(cell) for cell in row)
 
 def is_total(row):
     return any(str(cell).startswith("TOTAL ") for cell in row)
 
+def is_shift(row):
+    return any("SHIFT" in str(cell) for cell in row)
+
 def is_empty(row):
     return not any(cell.strip() for cell in row)
 
 def is_special(row):
-    return is_pembatas(row) or is_total(row) or is_empty(row)
+    return is_pembatas(row) or is_total(row) or is_shift(row) or is_empty(row)
 
 def format_rupiah(value):
     try:
@@ -90,16 +101,16 @@ def parse_rupiah(value):
 
 def format_jumlah(value):
     try:
-        value_clean = str(value).replace(",", ".").strip()
-        angka = float(value_clean)
-        if angka == int(angka):
-            return str(int(angka))
+        angka = int(str(value).strip())
+        hasil = angka / 1000
+        if hasil == int(hasil):
+            return str(int(hasil))
         else:
-            return str(round(angka, 10)).replace(".", ",")
+            return str(round(hasil, 10)).replace(".", ",")
     except:
         return str(value)
 
-def parse_jumlah(value):
+def parse_jumlah_dari_sheet(value):
     try:
         return float(str(value).replace(",", ".").strip())
     except:
@@ -110,22 +121,9 @@ def format_total_jumlah(total):
         return str(int(total))
     return str(round(total, 10)).replace(".", ",")
 
-def perlu_konfirmasi_jumlah(value):
-    value_clean  = str(value).replace(",", ".").strip()
-    bagian_depan = value_clean.split(".")[0]
-    return len(bagian_depan) == 3
-
-def perlu_konfirmasi_nominal(value):
-    try:
-        angka = int(str(value).replace(".", "").replace(",", "").strip())
-        return angka < 10000
-    except:
-        return False
-
 def bersihkan_wa(value):
     return re.sub(r'[^0-9]', '', value)
 
-# ── Hitung total deposit - hutang
 def hitung_total_dh(deposit, hutang):
     try:
         d = parse_rupiah(deposit) if deposit else 0
@@ -140,7 +138,7 @@ def hitung_total_dh(deposit, hutang):
         return ""
 
 def validasi_wa(value):
-    if not value or value == "-":
+    if not value.strip():
         return True, ""
     if re.search(r'[a-zA-Z]', value):
         return False, "❌ Nomor Whatsapp tidak boleh ada huruf!\nContoh: 628123456789 atau 08123456789"
@@ -149,58 +147,89 @@ def validasi_wa(value):
         return False, f"❌ Nomor Whatsapp terlalu pendek!\nKamu masukan: {bersih}\nMinimal 9 digit"
     return True, ""
 
-def validasi_no_id(value):
-    if not value.isdigit():
-        return False, "❌ NO ID hanya boleh angka!\nSilakan kirim ulang dengan format yang benar."
-    if len(value) > 3:
-        return False, "❌ NO ID tidak boleh lebih dari 3 digit!\nSilakan kirim ulang dengan format yang benar."
+def validasi_id(value):
+    if not value.strip():
+        return True, ""
+    if not value.strip().isdigit():
+        return False, "❌ ID hanya boleh berisi angka!\nContoh yang benar: 12345"
     return True, ""
 
-def validasi_id_penerima(value):
-    if not value.isdigit():
-        return False, "❌ ID Penerima hanya boleh angka!\nSilakan kirim ulang dengan format yang benar."
-    return True, ""
-
-def validasi_jumlah_bongkaran(value):
-    value_clean = str(value).replace(",", ".").strip()
-    try:
-        float(value_clean)
-    except:
-        return False, "❌ Jumlah Bongkaran hanya boleh angka!\nSilakan kirim ulang dengan format yang benar."
-    bagian_depan = value_clean.split(".")[0]
-    if len(bagian_depan) > 3:
-        return False, "❌ Jumlah Bongkaran tidak boleh lebih dari 3 digit!\nSilakan kirim ulang dengan format yang benar."
+def validasi_username(value):
+    if not value.strip():
+        return True, ""
+    value = value.strip()
+    if value.isdigit():
+        return False, "❌ Username tidak boleh angka semua!\nHarus ada kombinasi huruf\nContoh: @budi123 atau royal"
+    if not re.search(r'[a-zA-Z]', value):
+        return False, "❌ Username harus mengandung huruf!\nContoh: @budi123 atau royal"
     return True, ""
 
 def validasi_nominal(value):
+    if not value.strip():
+        return True, ""
     try:
         angka = int(str(value).replace(".", "").replace(",", "").strip())
         if angka < 4000:
-            return False, "❌ Nominal minimum Rp 4.000!\nSilakan kirim ulang dengan nominal yang benar."
+            return False, f"❌ Nominal minimum Rp 4.000!\nKamu memasukan {format_rupiah(str(angka))}\nSilakan masukan nominal yang benar"
     except:
-        return False, "❌ Nominal hanya boleh angka!\nSilakan kirim ulang dengan format yang benar."
+        return False, "❌ Nominal hanya boleh angka!\nSilakan masukan nominal yang benar"
+    return True, ""
+
+def validasi_jumlah(value):
+    if not value.strip():
+        return True, ""
+    value = value.strip()
+    if "." in value:
+        return False, f"❌ Jumlah tidak boleh menggunakan titik!\nKamu memasukan: {value}\nMasukan angka saja: {value.replace('.', '')}"
+    if "," in value:
+        return False, f"❌ Jumlah tidak boleh menggunakan koma!\nKamu memasukan: {value}\nMasukan angka saja: {value.replace(',', '')}"
+    if not value.isdigit():
+        return False, f"❌ Jumlah hanya boleh berisi angka!\nKamu memasukan: {value}"
+    if len(value) < 3:
+        return False, f"❌ Jumlah minimal 3 digit!\nKamu memasukan: {value}\nMinimal: 100"
+    return True, ""
+
+def validasi_rd_hdi(value):
+    if not value.strip():
+        return True, ""
+    if not re.match(r'^[a-zA-Z\s/]+$', value.strip()):
+        return False, "❌ RD/HDI hanya boleh berisi huruf!\nContoh yang benar: RD atau HDI"
+    return True, ""
+
+def validasi_bank(value):
+    if not value.strip():
+        return True, ""
+    if not re.match(r'^[a-zA-Z\s]+$', value.strip()):
+        return False, "❌ Bank hanya boleh berisi huruf!\nContoh yang benar: BCA atau DANA"
     return True, ""
 
 def format_baris_baru(sheet, idx, tipe):
     try:
         if tipe == "pembatas":
-            sheet.merge_cells(f"A{idx}:N{idx}")
-            sheet.format(f"A{idx}:N{idx}", {
+            sheet.merge_cells(f"A{idx}:K{idx}")
+            sheet.format(f"A{idx}:K{idx}", {
                 "horizontalAlignment": "CENTER",
                 "textFormat"         : {"bold": True},
                 "backgroundColor"    : {"red": 0.8, "green": 0.8, "blue": 0.8}
             })
         elif tipe == "total":
-            sheet.format(f"A{idx}:N{idx}", {
+            sheet.format(f"A{idx}:K{idx}", {
                 "textFormat"      : {"bold": True},
                 "backgroundColor" : {"red": 1.0, "green": 0.95, "blue": 0.4}
+            })
+        elif tipe == "shift":
+            sheet.merge_cells(f"A{idx}:K{idx}")
+            sheet.format(f"A{idx}:K{idx}", {
+                "horizontalAlignment": "CENTER",
+                "textFormat"         : {"bold": True, "italic": True},
+                "backgroundColor"    : {"red": 0.9, "green": 0.95, "blue": 1.0}
             })
     except Exception as e:
         logger.error(f"❌ Gagal format baris: {e}")
 
 def hitung_total_satu_hari(all_data, target_date):
-    total_jumlah  = 0.0
     total_nominal = 0
+    total_jumlah  = 0.0
     for row in all_data[1:]:
         if is_special(row):
             continue
@@ -208,18 +237,22 @@ def hitung_total_satu_hari(all_data, target_date):
             dt_row = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
             if dt_row.date() != target_date:
                 continue
-            total_jumlah  += parse_jumlah(row[6])
-            total_nominal += parse_rupiah(row[7])
+            total_nominal += parse_rupiah(row[4])
+            total_jumlah  += parse_jumlah_dari_sheet(row[5])
         except:
             continue
-    return total_jumlah, total_nominal
+    return total_nominal, total_jumlah
 
-def tambah_total_dan_pembatas(sheet, timestamp_sekarang):
+def tambah_total_dan_pembatas(sheet, dt_sekarang):
     try:
         all_data   = sheet.get_all_values()
         total_rows = len(all_data)
 
         if total_rows <= 1:
+            sheet.append_row([format_label_hari(dt_sekarang)] + [""] * 10)
+            format_baris_baru(sheet, total_rows + 1, "pembatas")
+            sheet.append_row([get_shift(dt_sekarang)] + [""] * 10)
+            format_baris_baru(sheet, total_rows + 2, "shift")
             return
 
         baris_terakhir = None
@@ -229,14 +262,16 @@ def tambah_total_dan_pembatas(sheet, timestamp_sekarang):
                 break
 
         if baris_terakhir is None:
+            sheet.append_row([format_label_hari(dt_sekarang)] + [""] * 10)
+            format_baris_baru(sheet, total_rows + 1, "pembatas")
+            sheet.append_row([get_shift(dt_sekarang)] + [""] * 10)
+            format_baris_baru(sheet, total_rows + 2, "shift")
             return
 
         try:
             dt_terakhir = datetime.strptime(baris_terakhir[0], "%Y-%m-%d %H:%M:%S")
         except:
             return
-
-        dt_sekarang = datetime.strptime(timestamp_sekarang, "%Y-%m-%d %H:%M:%S")
 
         if dt_terakhir.date() >= dt_sekarang.date():
             return
@@ -246,21 +281,52 @@ def tambah_total_dan_pembatas(sheet, timestamp_sekarang):
             if is_total(row) and label_total in str(row[0]):
                 return
 
-        total_jumlah, total_nominal = hitung_total_satu_hari(
+        total_nominal, total_jumlah = hitung_total_satu_hari(
             all_data, dt_terakhir.date()
         )
 
-        tj_str = format_total_jumlah(total_jumlah)
         tn_str = format_rupiah(str(total_nominal))
+        tj_str = format_total_jumlah(total_jumlah)
 
-        sheet.append_row([label_total, "", "", "", "", "", tj_str, tn_str, "", "", "", "", "", ""])
+        sheet.append_row([label_total, "", "", "", tn_str, tj_str, "", "", "", "", ""])
         format_baris_baru(sheet, total_rows + 1, "total")
-        sheet.append_row([format_label_hari(dt_sekarang)] + [""] * 13)
+        sheet.append_row([format_label_hari(dt_sekarang)] + [""] * 10)
         format_baris_baru(sheet, total_rows + 2, "pembatas")
-        logger.info(f"✅ Total + pembatas: {label_total}")
+        sheet.append_row([get_shift(dt_sekarang)] + [""] * 10)
+        format_baris_baru(sheet, total_rows + 3, "shift")
+        logger.info(f"✅ Total + pembatas + shift: {label_total}")
 
     except Exception as e:
         logger.error(f"❌ Gagal tambah total: {e}")
+
+def cek_tambah_shift(sheet, dt_sekarang):
+    try:
+        all_data  = sheet.get_all_values()
+        shift_now = get_shift(dt_sekarang)
+
+        shift_terakhir = None
+        for row in reversed(all_data[1:]):
+            if is_shift(row):
+                shift_terakhir = row[0].strip()
+                break
+
+        if shift_terakhir == shift_now:
+            return
+
+        label_hari_ini        = format_label_hari(dt_sekarang)
+        ada_pembatas_hari_ini = any(
+            is_pembatas(row) and label_hari_ini in str(row[0])
+            for row in all_data[1:]
+        )
+
+        if ada_pembatas_hari_ini:
+            total_rows = len(all_data)
+            sheet.append_row([shift_now] + [""] * 10)
+            format_baris_baru(sheet, total_rows + 1, "shift")
+            logger.info(f"✅ Shift: {shift_now}")
+
+    except Exception as e:
+        logger.error(f"❌ Gagal cek shift: {e}")
 
 def hapus_dari_sheet(sheet, timestamp):
     try:
@@ -290,12 +356,9 @@ def hapus_dari_sheet(sheet, timestamp):
 
 def parse_message(text):
     data = {
-        "id_pengirim": "-", "username_pengirim": "-",
-        "no_id": "-", "id_penerima": "-",
-        "jumlah_bongkaran": "-", "nominal": "-",
-        "bank_ewallet": "-", "nomor": "-",
-        "an": "-", "wa": "-",
-        "deposit": "", "hutang": "",
+        "id": "", "username": "", "nominal": "",
+        "jumlah": "", "rd_hdi": "", "bank": "",
+        "wa": "", "deposit": "", "hutang": "",
     }
     for line in text.strip().split("\n"):
         if ":" not in line:
@@ -303,24 +366,18 @@ def parse_message(text):
         key, _, value = line.partition(":")
         key   = key.strip().lower()
         value = value.strip()
-        if key == "id pengirim":
-            data["id_pengirim"] = value
-        elif key == "username pengirim":
-            data["username_pengirim"] = value
-        elif key == "no id":
-            data["no_id"] = value
-        elif key == "id penerima":
-            data["id_penerima"] = value
-        elif key == "jumlah bongkaran":
-            data["jumlah_bongkaran"] = value
+        if key == "id":
+            data["id"] = value
+        elif key == "username":
+            data["username"] = value
         elif key == "nominal":
             data["nominal"] = value
-        elif key in ["bank/ewallet", "bank", "ewallet"]:
-            data["bank_ewallet"] = value
-        elif key == "nomor":
-            data["nomor"] = value
-        elif key == "an":
-            data["an"] = value
+        elif key == "jumlah":
+            data["jumlah"] = value
+        elif key in ["rd / hdi", "rd/hdi", "rd"]:
+            data["rd_hdi"] = value
+        elif key == "bank":
+            data["bank"] = value
         elif key in ["nomor whatsapp", "nomor wahtsapp", "no whatsapp", "wa"]:
             data["wa"] = value
         elif key == "deposit":
@@ -349,32 +406,13 @@ def buat_keyboard_konfirmasi_hapus(orig_msg_id, user_id):
         ),
     ]])
 
-def buat_teks_konfirmasi(data, total):
-    return (
-        f"✅ Data berhasil dicatat!\n\n"
-        f"👤 ID Pengirim   : {data['id_pengirim']}\n"
-        f"👤 Username      : {data['username_pengirim']}\n"
-        f"🔢 NO ID         : {data['no_id']}\n"
-        f"👥 ID Penerima   : {data['id_penerima']}\n"
-        f"📦 Jml Bongkaran : {data['jumlah_bongkaran']}\n"
-        f"💰 Nominal       : {data['nominal']}\n"
-        f"🏦 Bank/Ewallet  : {data['bank_ewallet']}\n"
-        f"🔢 Nomor         : {data['nomor']}\n"
-        f"👤 AN            : {data['an']}\n"
-        f"📱 WA            : {data['wa']}\n"
-        f"💵 Deposit       : {data['deposit'] or '-'}\n"
-        f"💸 Hutang        : {data['hutang'] or '-'}\n"
-        f"🧾 Total         : {total or '-'}"
-    )
-
 async def proses_pesan(msg, context, is_edit=False):
     if not msg or not msg.text:
         return
 
-    user_id  = msg.from_user.id
-    username = f"@{msg.from_user.username}" if msg.from_user.username else msg.from_user.first_name
-    chat_id  = msg.chat_id
-    text     = msg.text
+    user_id = msg.from_user.id
+    chat_id = msg.chat_id
+    text    = msg.text
 
     if ":" not in text:
         return
@@ -396,133 +434,77 @@ async def proses_pesan(msg, context, is_edit=False):
     else:
         timestamp = datetime.now(WIB).strftime("%Y-%m-%d %H:%M:%S")
 
-    data = parse_message(text)
+    dt_now = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+    data   = parse_message(text)
 
-    # ── Validasi
-    if data["wa"] != "-":
-        valid, error_msg = validasi_wa(data["wa"])
+    validasi_list = [
+        (validasi_wa,       data["wa"]),
+        (validasi_id,       data["id"]),
+        (validasi_username, data["username"]),
+        (validasi_nominal,  data["nominal"]),
+        (validasi_jumlah,   data["jumlah"]),
+        (validasi_rd_hdi,   data["rd_hdi"]),
+        (validasi_bank,     data["bank"]),
+    ]
+
+    for validasi_fn, field in validasi_list:
+        valid, error_msg = validasi_fn(field)
         if not valid:
             await msg.reply_text(error_msg)
             return
 
-    if data["no_id"] != "-":
-        valid, error_msg = validasi_no_id(data["no_id"])
-        if not valid:
-            await msg.reply_text(error_msg)
-            return
-
-    if data["id_penerima"] != "-":
-        valid, error_msg = validasi_id_penerima(data["id_penerima"])
-        if not valid:
-            await msg.reply_text(error_msg)
-            return
-
-    if data["jumlah_bongkaran"] != "-":
-        valid, error_msg = validasi_jumlah_bongkaran(data["jumlah_bongkaran"])
-        if not valid:
-            await msg.reply_text(error_msg)
-            return
-
-    if data["nominal"] != "-":
-        valid, error_msg = validasi_nominal(data["nominal"])
-        if not valid:
-            await msg.reply_text(error_msg)
-            return
-
-    # ── Bersihkan WA
-    if data["wa"] != "-":
+    if data["wa"]:
         data["wa"] = bersihkan_wa(data["wa"])
-
-    # ── Format deposit & hutang
+    if data["nominal"]:
+        data["nominal"] = format_rupiah(data["nominal"])
+    if data["jumlah"]:
+        data["jumlah"] = format_jumlah(data["jumlah"])
     if data["deposit"]:
         data["deposit"] = format_rupiah(data["deposit"])
     if data["hutang"]:
         data["hutang"] = format_rupiah(data["hutang"])
 
-    # ── Hitung total
     total = hitung_total_dh(data["deposit"], data["hutang"])
 
-    # ── Cek konfirmasi M/B
-    jumlah_raw               = data["jumlah_bongkaran"]
-    butuh_konfirmasi_jumlah  = perlu_konfirmasi_jumlah(jumlah_raw) if jumlah_raw != "-" else False
-    butuh_konfirmasi_nominal = perlu_konfirmasi_nominal(data["nominal"]) if data["nominal"] != "-" else False
+    row = [
+        timestamp, data["wa"], data["id"],
+        data["username"], data["nominal"], data["jumlah"],
+        data["rd_hdi"], data["bank"],
+        data["deposit"], data["hutang"], total,
+    ]
 
-    if butuh_konfirmasi_jumlah:
-        pending_data[msg.message_id] = {
-            "data"        : data,
-            "timestamp"   : timestamp,
-            "user_id"     : user_id,
-            "username"    : username,
-            "step"        : "jumlah",
-            "orig_msg_id" : msg.message_id,
-            "bot_msg_id"  : None,
-            "chat_id"     : chat_id,
-            "total"       : total,
-        }
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("M", callback_data=f"M|jumlah|{msg.message_id}"),
-            InlineKeyboardButton("B", callback_data=f"B|jumlah|{msg.message_id}"),
-        ]])
+    try:
+        sheet = get_sheet()
+        tambah_total_dan_pembatas(sheet, dt_now)
+        cek_tambah_shift(sheet, dt_now)
+        sheet.append_row(row)
+        logger.info(f"✅ Saved | {data['username']} | WA: {data['wa']}")
+
         bot_msg = await msg.reply_text(
-            f"❓ {username} Jumlah Bongkaran {jumlah_raw} ini M atau B?",
-            reply_markup=keyboard
+            f"✅ Data berhasil dicatat!\n\n"
+            f"🔢 ID       : {data['id'] or '-'}\n"
+            f"👤 Username : {data['username'] or '-'}\n"
+            f"💰 Nominal  : {data['nominal'] or '-'}\n"
+            f"📦 Jumlah   : {data['jumlah'] or '-'}\n"
+            f"🏷️ RD/HDI   : {data['rd_hdi'] or '-'}\n"
+            f"🏦 Bank     : {data['bank'] or '-'}\n"
+            f"📱 WA       : {data['wa'] or '-'}\n"
+            f"💵 Deposit  : {data['deposit'] or '-'}\n"
+            f"💸 Hutang   : {data['hutang'] or '-'}\n"
+            f"🧾 Total    : {total or '-'}",
+            reply_markup=buat_keyboard_hapus(msg.message_id, user_id)
         )
-        pending_data[msg.message_id]["bot_msg_id"] = bot_msg.message_id
 
-    elif butuh_konfirmasi_nominal:
-        data["jumlah_bongkaran"] = format_jumlah(jumlah_raw) if jumlah_raw != "-" else "-"
-        pending_data[msg.message_id] = {
-            "data"        : data,
-            "timestamp"   : timestamp,
-            "user_id"     : user_id,
-            "username"    : username,
-            "step"        : "nominal",
-            "orig_msg_id" : msg.message_id,
-            "bot_msg_id"  : None,
-            "chat_id"     : chat_id,
-            "total"       : total,
+        saved_messages[msg.message_id] = {
+            "bot_msg_id" : bot_msg.message_id,
+            "timestamp"  : timestamp,
+            "user_id"    : user_id,
+            "chat_id"    : chat_id,
         }
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("M", callback_data=f"M|nominal|{msg.message_id}"),
-            InlineKeyboardButton("B", callback_data=f"B|nominal|{msg.message_id}"),
-        ]])
-        bot_msg = await msg.reply_text(
-            f"❓ {username} Nominal {format_rupiah(data['nominal'])} ini M atau B?",
-            reply_markup=keyboard
-        )
-        pending_data[msg.message_id]["bot_msg_id"] = bot_msg.message_id
 
-    else:
-        data["jumlah_bongkaran"] = format_jumlah(jumlah_raw) if jumlah_raw != "-" else "-"
-        data["nominal"]          = format_rupiah(data["nominal"]) if data["nominal"] != "-" else "-"
-
-        row = [
-            timestamp, data["wa"], data["id_pengirim"],
-            data["username_pengirim"], data["no_id"], data["id_penerima"],
-            data["jumlah_bongkaran"], data["nominal"], data["bank_ewallet"],
-            data["nomor"], data["an"],
-            data["deposit"], data["hutang"], total,
-        ]
-
-        try:
-            sheet = get_sheet()
-            tambah_total_dan_pembatas(sheet, timestamp)
-            sheet.append_row(row)
-            logger.info(f"✅ Saved | {data['username_pengirim']} | WA: {data['wa']}")
-
-            bot_msg = await msg.reply_text(
-                buat_teks_konfirmasi(data, total),
-                reply_markup=buat_keyboard_hapus(msg.message_id, user_id)
-            )
-            saved_messages[msg.message_id] = {
-                "bot_msg_id" : bot_msg.message_id,
-                "timestamp"  : timestamp,
-                "user_id"    : user_id,
-                "chat_id"    : chat_id,
-            }
-        except Exception as e:
-            logger.error(f"❌ Failed: {e}")
-            await msg.reply_text("❌ Gagal menyimpan data!")
+    except Exception as e:
+        logger.error(f"❌ Failed: {e}")
+        await msg.reply_text("❌ Gagal menyimpan data!")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.edited_message:
@@ -611,135 +593,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=buat_keyboard_hapus(orig_msg_id, owner_user_id)
             )
         return
-
-    # ── Handle button M/B
-    parts = query.data.split("|")
-    if len(parts) != 3:
-        return
-
-    pilihan, step, orig_msg_id = parts[0], parts[1], int(parts[2])
-
-    if orig_msg_id not in pending_data:
-        await query.answer("⚠️ Data sudah tidak tersedia!", show_alert=True)
-        return
-
-    pending = pending_data[orig_msg_id]
-
-    if user_id != pending["user_id"]:
-        await query.answer(
-            f"❌ Hanya {pending['username']} yang bisa menjawab ini!",
-            show_alert=True
-        )
-        return
-
-    data      = pending["data"]
-    timestamp = pending["timestamp"]
-    total     = pending.get("total", "")
-
-    if step == "jumlah":
-        if pilihan == "M":
-            jumlah_angka             = float(data["jumlah_bongkaran"].replace(",", "."))
-            data["jumlah_bongkaran"] = format_jumlah(str(jumlah_angka / 1000))
-            data["nominal"]          = format_rupiah(data["nominal"]) if data["nominal"] != "-" else "-"
-
-            row = [
-                timestamp, data["wa"], data["id_pengirim"],
-                data["username_pengirim"], data["no_id"], data["id_penerima"],
-                data["jumlah_bongkaran"], data["nominal"], data["bank_ewallet"],
-                data["nomor"], data["an"],
-                data["deposit"], data["hutang"], total,
-            ]
-            try:
-                sheet = get_sheet()
-                tambah_total_dan_pembatas(sheet, timestamp)
-                sheet.append_row(row)
-                await query.edit_message_text(
-                    buat_teks_konfirmasi(data, total),
-                    reply_markup=buat_keyboard_hapus(orig_msg_id, pending["user_id"])
-                )
-                saved_messages[orig_msg_id] = {
-                    "bot_msg_id" : pending["bot_msg_id"],
-                    "timestamp"  : timestamp,
-                    "user_id"    : pending["user_id"],
-                    "chat_id"    : pending["chat_id"],
-                }
-            except Exception as e:
-                logger.error(f"❌ Failed: {e}")
-                await query.edit_message_text("❌ Gagal menyimpan data!")
-            del pending_data[orig_msg_id]
-
-        else:  # B
-            data["jumlah_bongkaran"] = format_jumlah(data["jumlah_bongkaran"])
-            if perlu_konfirmasi_nominal(data["nominal"]):
-                pending["step"] = "nominal"
-                keyboard = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("M", callback_data=f"M|nominal|{orig_msg_id}"),
-                    InlineKeyboardButton("B", callback_data=f"B|nominal|{orig_msg_id}"),
-                ]])
-                await query.edit_message_text(
-                    f"❓ {pending['username']} Nominal {format_rupiah(data['nominal'])} ini M atau B?",
-                    reply_markup=keyboard
-                )
-            else:
-                data["nominal"] = format_rupiah(data["nominal"]) if data["nominal"] != "-" else "-"
-                row = [
-                    timestamp, data["wa"], data["id_pengirim"],
-                    data["username_pengirim"], data["no_id"], data["id_penerima"],
-                    data["jumlah_bongkaran"], data["nominal"], data["bank_ewallet"],
-                    data["nomor"], data["an"],
-                    data["deposit"], data["hutang"], total,
-                ]
-                try:
-                    sheet = get_sheet()
-                    tambah_total_dan_pembatas(sheet, timestamp)
-                    sheet.append_row(row)
-                    await query.edit_message_text(
-                        buat_teks_konfirmasi(data, total),
-                        reply_markup=buat_keyboard_hapus(orig_msg_id, pending["user_id"])
-                    )
-                    saved_messages[orig_msg_id] = {
-                        "bot_msg_id" : pending["bot_msg_id"],
-                        "timestamp"  : timestamp,
-                        "user_id"    : pending["user_id"],
-                        "chat_id"    : pending["chat_id"],
-                    }
-                except Exception as e:
-                    logger.error(f"❌ Failed: {e}")
-                    await query.edit_message_text("❌ Gagal menyimpan data!")
-                del pending_data[orig_msg_id]
-
-    elif step == "nominal":
-        if pilihan == "M":
-            data["nominal"] = format_rupiah(data["nominal"]) if data["nominal"] != "-" else "-"
-        else:
-            nominal_angka   = int(str(data["nominal"]).replace(".", "").replace(",", "").strip())
-            data["nominal"] = format_rupiah(str(nominal_angka * 10))
-
-        row = [
-            timestamp, data["wa"], data["id_pengirim"],
-            data["username_pengirim"], data["no_id"], data["id_penerima"],
-            data["jumlah_bongkaran"], data["nominal"], data["bank_ewallet"],
-            data["nomor"], data["an"],
-            data["deposit"], data["hutang"], total,
-        ]
-        try:
-            sheet = get_sheet()
-            tambah_total_dan_pembatas(sheet, timestamp)
-            sheet.append_row(row)
-            await query.edit_message_text(
-                buat_teks_konfirmasi(data, total),
-                reply_markup=buat_keyboard_hapus(orig_msg_id, pending["user_id"])
-            )
-            saved_messages[orig_msg_id] = {
-                "bot_msg_id" : pending["bot_msg_id"],
-                "timestamp"  : timestamp,
-                "user_id"    : pending["user_id"],
-                "chat_id"    : pending["chat_id"],
-            }
-        except Exception as e:
-            logger.error(f"❌ Failed: {e}")
-            await query.edit_message_text("❌ Gagal menyimpan data!")
-        del pending_data[orig_msg_id]
 
 def main():
     logger.info("🚀 Bot starting...")
